@@ -815,6 +815,74 @@ function render(p) {
 }
 
 // ============================================================================
+// BUILD MARKDOWN REPORT (for the manager email body)
+// ============================================================================
+function buildMarkdown(p) {
+  const cs = p.cs || {};
+  const catRows = CATS.map(c => {
+    const s = (typeof cs[c.k] === 'number') ? cs[c.k] : 0;
+    return `- ${c.name}: **${s} / ${c.max}**`;
+  }).join('\n');
+
+  const list = (arr) => (Array.isArray(arr) && arr.filter(Boolean).length)
+    ? arr.filter(Boolean).map(x => `- ${x}`).join('\n')
+    : '_(none noted)_';
+
+  const ob = p.ob || {};
+  const bonusLine = (typeof p.bn === 'number' && p.bn > 0)
+    ? `\n**Hidden Discovery Bonus earned:** +${p.bn} (agent uncovered concealed $1M 401(k) asset)\n`
+    : '';
+
+  return (
+`# Consumer Roleplay — Agent Scorecard
+
+**Agent:** ${p.a || '—'}
+**Date:** ${p.d || '—'}
+**Product:** ${p.p || '—'} · **Interaction:** ${p.i || '—'}
+**Persona:** ${p.pr || '—'} · **Difficulty:** ${p.df || '—'}
+**Requested Scenario:** ${p.rs || '—'}
+**Outcome:** ${p.o || '—'}
+
+---
+
+## Final Grade
+- **Total:** ${p.ts ?? '—'} / 125
+- **Base Score:** ${p.bs ?? '—'} / 100
+- **Bonus:** ${p.bn ?? 0} / 25
+- **Grade Band:** ${p.gb || '—'}
+${bonusLine}
+## Category Scores
+${catRows}
+
+## Strengths
+${list(p.st)}
+
+## Weaknesses
+${list(p.wk)}
+
+## Missed Opportunities
+${list(p.mo)}
+
+## Objection Handling
+- **Main objection:** ${ob.m || '—'}
+- **How handled:** ${ob.h || '—'}
+- **What would have improved:** ${ob.iv || '—'}
+
+## Risk / Compliance Flags
+${list(p.rf)}
+
+## Coaching Focus
+${list(p.cf)}
+
+## Manager Summary
+${p.sm || '—'}
+
+## Next Scenario Assignment
+${list(p.ns)}
+`);
+}
+
+// ============================================================================
 // SEND TO APPS SCRIPT
 // ============================================================================
 async function sendToManager(payload) {
@@ -828,29 +896,29 @@ async function sendToManager(payload) {
   }
 
   try {
+    // Field names MUST match Apps Script doPost() — snake_case
     const body = {
       api_key: CONFIG.API_KEY,
-      agent: payload.a,
-      date: payload.d,
+      agent_name: payload.a,
+      requested_scenario: payload.rs,
+      simulation_date: payload.d,
       product: payload.p,
-      interaction: payload.i,
-      persona: payload.pr,
+      interaction_type: payload.i,
+      persona_type: payload.pr,
       difficulty: payload.df,
-      scenario: payload.rs,
       outcome: payload.o,
-      baseScore: payload.bs,
-      bonus: payload.bn,
-      totalScore: payload.ts,
-      gradeBand: payload.gb,
-      categoryScores: payload.cs,
+      score: payload.ts,
+      base_score: payload.bs,
+      bonus_score: payload.bn,
+      total_score: payload.ts,
+      grade_band: payload.gb,
+      summary: payload.sm,
       strengths: payload.st,
       weaknesses: payload.wk,
-      missedOpportunities: payload.mo,
-      objection: payload.ob,
-      riskFlags: payload.rf,
-      coachingFocus: payload.cf,
-      managerSummary: payload.sm,
-      nextScenario: payload.ns,
+      risk_flags: payload.rf,
+      coaching_focus: payload.cf,
+      next_scenario: payload.ns,
+      full_report_markdown: buildMarkdown(payload),
     };
 
     // Apps Script web apps don't reliably accept CORS preflight.
