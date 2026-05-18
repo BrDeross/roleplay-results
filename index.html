@@ -990,6 +990,7 @@ function render(p) {
   const ns = Array.isArray(p.ns) ? p.ns.filter(Boolean).join(' · ') : p.ns;
   setText('next-scenario', ns);
 
+  resetAutoReloadFlagOnSuccess();
   $('loading').style.display = 'none';
   $('results').style.display = '';
 
@@ -1120,6 +1121,40 @@ async function sendToManager(payload) {
   }
 }
 
+
+
+function hasScorecardDataMarker() {
+  const combined = htmlEntityDecode(String(window.location.href || '') + ' ' + String(window.location.hash || '') + ' ' + String(window.location.search || ''));
+  return /(?:^|[?#&\/])(?:d|data)=/i.test(combined) || /%7B%22|%257B%2522|eyJ/i.test(combined);
+}
+
+function resetAutoReloadFlagOnSuccess() {
+  try { if (window.sessionStorage) window.sessionStorage.removeItem('roleplay_results_auto_reloaded'); } catch (e) {}
+}
+
+function autoReloadOnce(reason) {
+  if (hasInitializedResults) return false;
+  if (!hasScorecardDataMarker()) return false;
+  try {
+    if (window.sessionStorage && window.sessionStorage.getItem('roleplay_results_auto_reloaded') === '1') return false;
+    if (window.sessionStorage) window.sessionStorage.setItem('roleplay_results_auto_reloaded', '1');
+  } catch (e) {}
+
+  const msg = document.querySelector('#loading p');
+  if (msg) msg.textContent = 'Refreshing the scorecard link automatically. This replaces the manual second click.';
+
+  setTimeout(() => {
+    try {
+      // Re-open the exact same URL once. This mimics the manual second click that succeeds
+      // when a browser/webview does not fully decode a long hash/query payload on first open.
+      window.location.replace(window.location.href);
+    } catch (e) {
+      window.location.reload();
+    }
+  }, 250);
+  return true;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -1142,6 +1177,14 @@ async function tryInitResults(maxAttempts = 120, delayMs = 500, showFinalError =
       return;
     }
 
+    // If data is present but not decodable on initial load, automatically mimic the
+    // manual second click once. This specifically addresses first-click spin/error,
+    // second-click success behavior in browser/webview link handling.
+    if (attempt === 8 && autoReloadOnce('decode-failed-first-open')) {
+      isTryingToLoad = false;
+      return;
+    }
+
     // Keep the screen alive instead of failing on the first load. Some browsers/webviews
     // populate long hash/query payloads late when opening from chat or email links.
     if (attempt === 20) {
@@ -1160,6 +1203,9 @@ async function tryInitResults(maxAttempts = 120, delayMs = 500, showFinalError =
   isTryingToLoad = false;
 
   if (!hasInitializedResults && showFinalError) {
+    if (autoReloadOnce('final-decode-failed')) {
+      return;
+    }
     const hasAnyDataMarker = /(^#.*\bdata?=|^#.*\bd=|^\?.*\bdata?=|^\?.*\bd=)/i.test(window.location.hash || '') || /(^\?.*\bdata?=|^\?.*\bd=)/i.test(window.location.search || '');
     const detail = hasAnyDataMarker
       ? 'The scorecard data was found, but the browser could not decode it on this load. Tap Try loading again. If it still fails, the simulator is likely generating malformed or partially escaped scorecard data.'
