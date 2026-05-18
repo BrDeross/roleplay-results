@@ -647,10 +647,42 @@ function showError(title, message) {
 function getPayload() {
   const hash = window.location.hash || '';
   const search = window.location.search || '';
-  const raw = hash.replace(/^#(d=|data=)?/, '') ||
-              search.replace(/^\?(d=|data=)?/, '');
 
-  if (!raw) return null;
+  let raw = '';
+
+  // Preferred format from simulator:
+  // https://brdeross.github.io/roleplay-results/#d=PAYLOAD
+  if (hash.startsWith('#d=')) {
+    raw = hash.slice(3);
+  }
+
+  // Backup hash format:
+  // #data=PAYLOAD
+  if (!raw && hash.startsWith('#data=')) {
+    raw = hash.slice(6);
+  }
+
+  // Handles mobile/webview cases where hash contains extra routing characters.
+  if (!raw && hash) {
+    const hashClean = hash.replace(/^#/, '');
+    const hashParams = new URLSearchParams(hashClean);
+    raw = hashParams.get('d') || hashParams.get('data') || '';
+  }
+
+  // Backup query-string support:
+  // ?d=PAYLOAD or ?data=PAYLOAD
+  if (!raw && search) {
+    const searchParams = new URLSearchParams(search);
+    raw = searchParams.get('d') || searchParams.get('data') || '';
+  }
+
+  // Last-resort fallback for old direct format:
+  // #PAYLOAD or ?PAYLOAD
+  if (!raw) {
+    raw = hash.replace(/^#/, '') || search.replace(/^\?/, '');
+  }
+
+  if (!raw || raw === 'd=' || raw === 'data=') return null;
 
   const strategies = [
     (s) => JSON.parse(decodeURIComponent(s)),
@@ -669,6 +701,7 @@ function getPayload() {
       if (parsed && typeof parsed === 'object') return parsed;
     } catch (e) {}
   }
+
   return null;
 }
 
@@ -904,8 +937,8 @@ async function tryInitResults(maxAttempts = 20, delayMs = 400) {
 
   if (!hasInitializedResults) {
     showError(
-      'Results could not be loaded',
-      'This link opened before the results payload finished loading. Please close it and tap the results link again. If it still fails, complete the simulation again and open the fresh results link.'
+      'Results are still loading',
+      'If this page does not open automatically, close it and tap the scorecard link again. On mobile, open the link in your browser instead of an in-app preview if available.'
     );
   }
 }
