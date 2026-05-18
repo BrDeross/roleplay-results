@@ -1069,54 +1069,239 @@ ${list(p.ns)}
 `);
 }
 
-async function sendToManager(payload) {
+function safeLocalGet(key) {
+  try { return window.localStorage ? window.localStorage.getItem(key) : null; } catch (e) { return null; }
+}
+
+function safeLocalSet(key, value) {
+  try { if (window.localStorage) window.localStorage.setItem(key, value); } catch (e) {}
+}
+
+function safeLocalRemove(key) {
+  try { if (window.localStorage) window.localStorage.removeItem(key); } catch (e) {}
+}
+
+function hashString(str) {
+  // Small non-cryptographic hash used only to avoid duplicate browser-side sends.
+  let h = 2166136261;
+  const text = String(str || '');
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
+}
+
+function buildManagerEmailBody(payload) {
+  const markdown = buildMarkdown(payload);
+  const submissionId = hashString([
+    payload.a, payload.d, payload.p, payload.i, payload.pr, payload.df,
+    payload.rs, payload.ts, payload.bs, payload.bn, payload.gb, markdown
+  ].join('|'));
+
+  return {
+    api_key: CONFIG.API_KEY,
+    manager_email: CONFIG.MANAGER_EMAIL,
+    recipient_email: CONFIG.MANAGER_EMAIL,
+    to: CONFIG.MANAGER_EMAIL,
+    submission_id: submissionId,
+    agent_name: payload.a,
+    requested_scenario: payload.rs,
+    simulation_date: payload.d,
+    product: payload.p,
+    interaction_type: payload.i,
+    persona_type: payload.pr,
+    difficulty: payload.df,
+    outcome: payload.o,
+    score: `${payload.ts}/125 - ${payload.gb}`,
+    base_score: payload.bs,
+    bonus_score: payload.bn,
+    total_score: payload.ts,
+    grade_band: payload.gb,
+    summary: payload.sm,
+    strengths: payload.st,
+    weaknesses: payload.wk,
+    risk_flags: payload.rf,
+    coaching_focus: payload.cf,
+    next_scenario: payload.ns,
+    subject: `Roleplay Results - ${payload.a || 'Agent'} - ${payload.d || ''}`.trim(),
+    full_report_markdown: markdown,
+  };
+}
+
+function setEmailStatus(kind, message) {
+  const statusEl = $('status');
+  const textEl = $('status-text');
+  if (!statusEl || !textEl) return;
+  statusEl.classList.remove('ok', 'err');
+  if (kind) statusEl.classList.add(kind);
+  textEl.textContent = message;
+}
+
+function ensureEmailRetryButton(payload) {
+  const statusEl = $('status');
+  if (!statusEl || $('email-retry-btn')) return;
+  const btn = document.createElement('button');
+  btn.id = 'email-retry-btn';
+  btn.type = 'button';
+  btn.textContent = 'Send email again';
+  btn.style.cssText = 'margin-left:8px;padding:5px 10px;border-radius:999px;border:1px solid currentColor;background:#fff;color:inherit;font-weight:700;cursor:pointer;font-size:12px';
+  btn.addEventListener('click', () => sendToManager(payload, {manual:true, force:true}));
+  statusEl.appendChild(btn);
+}
+
+function buildEmailEndpointUrl(body) {
+  // Put the key fields in the query string as well as the POST body. This lets
+  // Google Apps Script handlers read either e.parameter.* or JSON from
+  // e.postData.contents without requiring a page redesign.
+  const url = new URL(CONFIG.APPS_SCRIPT_URL);
+  const params = {
+    api_key: body.api_key,
+    manager_email: body.manager_email,
+    recipient_email: body.recipient_email,
+    to: body.to,
+    submission_id: body.submission_id,
+  };
+  Object.entries(params).forEach(([k, v]) => {
+    if (v != null && v !== '') url.searchParams.set(k, String(v));
+  });
+  return url.toString();
+}
+
+async function postEmailPayload(body, attempt) {
+  const json = JSON.stringify(body);
+  const endpoint = buildEmailEndpointUrl(body);
+
+  // Automatic primary handoff. This fires as soon as the scorecard renders.
+  // text/plain keeps this a simple cross-origin request for Google Apps Script.
+  await fetch(endpoint, {
+    method: 'POST',
+    mode: 'no-cors',
+    cache: 'no-store',
+    keepalive: true,
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: json,
+  });
+
+  // Browser close/reload fallback. sendBeacon is fire-and-forget and often
+  // succeeds when a tab is backgrounded immediately after clicking the link.
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([json], { type: 'text/plain;charset=utf-8' });
+      navigator.sendBeacon(endpoint, blob);
+    }
+  } catch (e) {}
+
+  // Hidden form fallback for Apps Script handlers built around e.parameter.*.
+  // It posts the same values automatically without needing the agent to click.
+  try {
+    const iframeName = 'roleplay_email_iframe_' + Date.now() + '_' + attempt;
+    const iframe = document.createElement('iframe');
+    iframe.name = iframeName;
+    iframe.style.display = 'none';
+    iframe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(iframe);
+
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = endpoint;
+    form.target = iframeName;
+    form.style.display = 'none';
+
+    Object.entries(body).forEach(([key, value]) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = key;
+      input.value = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+      form.appendChild(input);
+    });
+
+    const payloadInput = document.createElement('input');
+    payloadInput.type = 'hidden';
+    payloadInput.name = 'payload_json';
+    payloadInput.value = json;
+    form.appendChild(payloadInput);
+
+    document.body.appendChild(form);
+    form.submit();
+    setTimeout(() => {
+      try { form.remove(); iframe.remove(); } catch (e) {}
+    }, 8000);
+  } catch (e) {}
+
+  // In no-cors/beacon/form modes the browser hides the server response. This
+  // delay gives the automatic handoff time to leave the browser before reloads.
+  await sleep(700 + (attempt * 200));
+}
+
+function queuePendingEmail(body) {
+  safeLocalSet('roleplay_pending_manager_email', JSON.stringify({
+    body,
+    queued_at: new Date().toISOString(),
+    attempts: 0,
+  }));
+}
+
+async function retryPendingEmail() {
+  const raw = safeLocalGet('roleplay_pending_manager_email');
+  if (!raw || !CONFIG.APPS_SCRIPT_URL || CONFIG.APPS_SCRIPT_URL.startsWith('PASTE_')) return;
+  try {
+    const pending = JSON.parse(raw);
+    if (!pending || !pending.body) return;
+    pending.attempts = (pending.attempts || 0) + 1;
+    safeLocalSet('roleplay_pending_manager_email', JSON.stringify(pending));
+    await postEmailPayload(pending.body, pending.attempts);
+    safeLocalRemove('roleplay_pending_manager_email');
+  } catch (e) {
+    // Keep it queued so the page can retry on focus/pageshow.
+  }
+}
+
+async function sendToManager(payload, options = {}) {
   const statusEl = $('status');
   const textEl = $('status-text');
 
   if (!CONFIG.APPS_SCRIPT_URL || CONFIG.APPS_SCRIPT_URL.startsWith('PASTE_')) {
-    statusEl.classList.add('err');
-    textEl.textContent = 'Manager email not configured';
+    setEmailStatus('err', 'Manager email not configured');
+    ensureEmailRetryButton(payload);
     return;
   }
 
+  const body = buildManagerEmailBody(payload);
+
+  // Do not use persistent localStorage as a hard dedupe gate. A no-cors request
+  // can appear successful to the browser even when Apps Script rejects it, which
+  // previously caused future opens of the same scorecard to skip the email.
+  // Deduplicate only inside the current page session unless the user manually
+  // clicks Send email again.
+  window.__roleplayEmailSentThisPage = window.__roleplayEmailSentThisPage || {};
+  if (!options.force && window.__roleplayEmailSentThisPage[body.submission_id]) {
+    setEmailStatus('ok', '✓ Results email already triggered for this open');
+    ensureEmailRetryButton(payload);
+    return;
+  }
+
+  queuePendingEmail(body);
+  setEmailStatus('', options.manual ? 'Sending email again…' : 'Automatically sending results email…');
+  ensureEmailRetryButton(payload);
+
   try {
-    const body = {
-      api_key: CONFIG.API_KEY,
-      manager_email: CONFIG.MANAGER_EMAIL,
-      agent_name: payload.a,
-      requested_scenario: payload.rs,
-      simulation_date: payload.d,
-      product: payload.p,
-      interaction_type: payload.i,
-      persona_type: payload.pr,
-      difficulty: payload.df,
-      outcome: payload.o,
-      score: `${payload.ts}/125 - ${payload.gb}`,
-      base_score: payload.bs,
-      bonus_score: payload.bn,
-      total_score: payload.ts,
-      grade_band: payload.gb,
-      summary: payload.sm,
-      strengths: payload.st,
-      weaknesses: payload.wk,
-      risk_flags: payload.rf,
-      coaching_focus: payload.cf,
-      next_scenario: payload.ns,
-      full_report_markdown: buildMarkdown(payload),
-    };
-
-    await fetch(CONFIG.APPS_SCRIPT_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(body),
-    });
-
-    statusEl.classList.add('ok');
-    textEl.textContent = '✓ Sent to manager';
+    // Try a few times because the scorecard page may auto-reload once on first open.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await postEmailPayload(body, attempt);
+        window.__roleplayEmailSentThisPage[body.submission_id] = true;
+        safeLocalSet('roleplay_last_manager_email_attempt_' + body.submission_id, new Date().toISOString());
+        safeLocalRemove('roleplay_pending_manager_email');
+        setEmailStatus('ok', '✓ Results email automatically sent to ' + CONFIG.MANAGER_EMAIL);
+        return;
+      } catch (innerErr) {
+        if (attempt === 3) throw innerErr;
+        await sleep(750 * attempt);
+      }
+    }
   } catch (err) {
-    statusEl.classList.add('err');
-    textEl.textContent = '⚠ Could not send — show this page to your manager';
+    setEmailStatus('err', '⚠ Email handoff failed — click Send email again');
     console.error('Send failed:', err);
   }
 }
@@ -1240,6 +1425,7 @@ function forceRetryResults() {
 }
 
 (function init() {
+  retryPendingEmail();
   const retryBtn = $('retry-load');
   if (retryBtn) retryBtn.addEventListener('click', forceRetryResults);
 
@@ -1255,14 +1441,17 @@ function forceRetryResults() {
   });
 
   window.addEventListener('pageshow', () => {
+    retryPendingEmail();
     if (!hasInitializedResults) forceRetryResults();
   });
 
   window.addEventListener('focus', () => {
+    retryPendingEmail();
     if (!hasInitializedResults) forceRetryResults();
   });
 
   document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) retryPendingEmail();
     if (!document.hidden && !hasInitializedResults) forceRetryResults();
   });
 })();
