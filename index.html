@@ -1074,86 +1074,53 @@ async function sendToManager(payload) {
   const textEl = $('status-text');
 
   if (!CONFIG.APPS_SCRIPT_URL || CONFIG.APPS_SCRIPT_URL.startsWith('PASTE_')) {
-    statusEl.classList.remove('ok');
     statusEl.classList.add('err');
     textEl.textContent = 'Manager email not configured';
     return;
   }
 
-  const body = {
-    api_key: CONFIG.API_KEY,
-    manager_email: CONFIG.MANAGER_EMAIL,
-    agent_name: payload.a,
-    requested_scenario: payload.rs,
-    simulation_date: payload.d,
-    product: payload.p,
-    interaction_type: payload.i,
-    persona_type: payload.pr,
-    difficulty: payload.df,
-    outcome: payload.o,
-    score: `${payload.ts}/125 - ${payload.gb}`,
-    base_score: payload.bs,
-    bonus_score: payload.bn,
-    total_score: payload.ts,
-    grade_band: payload.gb,
-    summary: payload.sm,
-    strengths: payload.st,
-    weaknesses: payload.wk,
-    risk_flags: payload.rf,
-    coaching_focus: payload.cf,
-    next_scenario: payload.ns,
-    full_report_markdown: buildMarkdown(payload),
-  };
-
-  const sendKey = 'roleplay_results_email_last_sent';
-  const fingerprint = [payload.a, payload.d, payload.ts, payload.gb, payload.rs].filter(Boolean).join('|');
-
-  // Prevent duplicate emails from the automatic one-time reload that fixes first-click loading.
-  // This still allows a new roleplay/result to send automatically.
   try {
-    if (window.sessionStorage && window.sessionStorage.getItem(sendKey) === fingerprint) {
-      statusEl.classList.add('ok');
-      textEl.textContent = `✓ Results email already triggered to ${CONFIG.MANAGER_EMAIL}`;
-      return;
-    }
-  } catch (e) {}
+    const body = {
+      api_key: CONFIG.API_KEY,
+      manager_email: CONFIG.MANAGER_EMAIL,
+      agent_name: payload.a,
+      requested_scenario: payload.rs,
+      simulation_date: payload.d,
+      product: payload.p,
+      interaction_type: payload.i,
+      persona_type: payload.pr,
+      difficulty: payload.df,
+      outcome: payload.o,
+      score: `${payload.ts}/125 - ${payload.gb}`,
+      base_score: payload.bs,
+      bonus_score: payload.bn,
+      total_score: payload.ts,
+      grade_band: payload.gb,
+      summary: payload.sm,
+      strengths: payload.st,
+      weaknesses: payload.wk,
+      risk_flags: payload.rf,
+      coaching_focus: payload.cf,
+      next_scenario: payload.ns,
+      full_report_markdown: buildMarkdown(payload),
+    };
 
-  const trySend = async (attempt) => {
-    statusEl.classList.remove('ok','err');
-    textEl.textContent = attempt === 1
-      ? `Sending results email to ${CONFIG.MANAGER_EMAIL}…`
-      : `Retrying results email to ${CONFIG.MANAGER_EMAIL}…`;
+    await fetch(CONFIG.APPS_SCRIPT_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(body),
+    });
 
-    try {
-      // Keep this as a simple no-cors POST so it does not interfere with page load,
-      // the hash payload, or the one-time automatic reload behavior.
-      await fetch(CONFIG.APPS_SCRIPT_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        cache: 'no-store',
-        keepalive: true,
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(body),
-      });
-
-      try { if (window.sessionStorage) window.sessionStorage.setItem(sendKey, fingerprint); } catch (e) {}
-      statusEl.classList.add('ok');
-      textEl.textContent = `✓ Results email triggered to ${CONFIG.MANAGER_EMAIL}`;
-      return true;
-    } catch (err) {
-      console.error('Send failed on attempt', attempt, err);
-      if (attempt < 3) {
-        setTimeout(() => trySend(attempt + 1), attempt * 1500);
-      } else {
-        statusEl.classList.add('err');
-        textEl.textContent = `⚠ Email handoff failed — show this page to ${CONFIG.MANAGER_EMAIL}`;
-      }
-      return false;
-    }
-  };
-
-  trySend(1);
+    statusEl.classList.add('ok');
+    textEl.textContent = '✓ Sent to manager';
+  } catch (err) {
+    statusEl.classList.add('err');
+    textEl.textContent = '⚠ Could not send — show this page to your manager';
+    console.error('Send failed:', err);
+  }
 }
+
 
 
 function hasScorecardDataMarker() {
